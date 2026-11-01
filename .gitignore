@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Vector database
+backend/chroma_db/
+
+# Node dependencies
+node_modules/
+frontend/node_modules/
+
+# Build files
+frontend/dist/
+
+# Java compiled files
+*.class
+
+# IDE
+.idea/
