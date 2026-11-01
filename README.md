@@ -153,6 +153,6 @@ Never commit API keys or other sensitive credentials.
 
 ## Project Status
 
-🚧 Work in Progress
+Work in Progress
 
 This project is being developed as an academic minor project with a focus on AI-assisted software analysis and automated DFD generation.
