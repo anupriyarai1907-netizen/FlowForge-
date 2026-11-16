@@ -1,9 +1,15 @@
-from google.genai.errors import ServerError
+
 import os
 import json
+import time
+
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
+from google.genai.errors import ServerError
+
 from retrieval import retrieve_context
+
 
 load_dotenv()
 
@@ -11,13 +17,18 @@ api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
     raise ValueError(
-        "GEMINI_API_KEY missing. Check your .env file."
+        "GEMINI_API_KEY missing. Check your environment variables."
     )
 
-client = genai.Client(api_key=api_key)
+# Limit each Gemini request to 45 seconds.
+client = genai.Client(
+    api_key=api_key,
+    http_options=types.HttpOptions(timeout=45000)
+)
 
 
 def generate_dfd(question):
+
     # 1. Retrieve project context
     context_chunks = retrieve_context(question)
 
@@ -41,7 +52,7 @@ def generate_dfd(question):
 
     context = "\n\n".join(context_parts)
 
-    # 2. Complete DFD generation prompt: 35 rules
+    # 2. DFD generation prompt
     prompt = f"""
 You are an expert source-code analyzer and Data Flow Diagram
 (DFD) generator.
@@ -61,24 +72,23 @@ RULES:
 2. Identify the program entry point and relevant functions.
 3. Create separate process nodes for meaningful operations.
 4. Identify user input and external system interactions.
-5. Identify variable initialization where it represents a
-   meaningful processing stage.
-6. Identify loops and the operations performed inside them.
-7. Identify if, else, switch, and other relevant conditions.
+5. Identify meaningful variable initialization stages.
+6. Identify loops and operations performed inside them.
+7. Identify if, else, switch, and relevant conditions.
 8. Identify calculations, counters, accumulators, and updates.
 9. Identify output operations and returned results.
-10. Keep distinct operations separate when this improves clarity.
+10. Keep distinct operations separate when useful.
 11. Group trivial statements when separate nodes add no value.
 12. Represent relevant functions and methods as process nodes.
 13. Connect caller and callee processes when an actual call exists.
 14. Represent users or external systems as external_entity nodes
     only when supported by the source code.
-15. Represent real persistent stores as data_store nodes only
-    when supported by the source code.
-16. Do not invent database tables or database relationships.
-17. Connect processes to stores only when the code provides evidence.
-18. Use meaningful labels describing the data being transferred.
-19. Preserve the actual order of operations supported by the code.
+15. Represent persistent stores as data_store nodes only when
+    supported by the source code.
+16. Do not invent database tables or relationships.
+17. Connect processes to stores only when code provides evidence.
+18. Use meaningful labels describing transferred data.
+19. Preserve the actual order of supported operations.
 20. Follow the actual source code, including its bugs.
 21. Do not silently correct incorrect conditions or calculations.
 22. Do not invent variables, functions, operations, or data flows.
@@ -92,25 +102,20 @@ RULES:
 30. Do not create loop edges merely because a node is named "loop".
 31. Represent true and false condition branches when supported.
 32. Do not invent branch outcomes or unsupported loop exits.
-33. Keep calculating totals, calculating averages, evaluating
-    pass/fail, and printing results as separate processes
-    whenever they are distinct operations in the source code.
+33. Keep calculating totals, averages, evaluating pass/fail,
+    and printing results separate when they are distinct operations.
 34. Evaluate pass/fail before output only when the code does so.
-35. Explain missing evidence in warnings and return valid JSON
-    matching the required schema.
+35. Explain missing evidence in warnings and return valid JSON.
 
 Additional requirements:
 - Prefer clear, readable diagrams over excessive node counts.
 - Include meaningful operations from every relevant supplied file.
-- If multiple files interact, connect them only where evidence exists.
+- Connect multiple files only where evidence exists.
 - If no database is present, do not create a data_store node.
 - Return only the structured JSON response.
 """
 
-    # 3. Request structured JSON from Gemini
-    
-    # 3. Request structured JSON from Gemini with automatic fallback
-
+    # 3. Structured JSON response schema
     response_schema = {
         "type": "OBJECT",
         "properties": {
@@ -177,6 +182,7 @@ Additional requirements:
         "required": ["title", "nodes", "edges", "warnings"]
     }
 
+    # 4. Gemini model fallback
     models_to_try = [
         "gemini-3.5-flash-lite",
         "gemini-3.6-flash",
@@ -186,7 +192,8 @@ Additional requirements:
     response = None
     last_error = None
 
-    for model_name in models_to_try:
+    for index, model_name in enumerate(models_to_try):
+
         try:
             print(f"Trying Gemini model: {model_name}")
 
@@ -199,31 +206,43 @@ Additional requirements:
                 }
             )
 
-            print(f"Successfully generated DFD using: {model_name}")
-            break
+            if response and response.text:
+                print(
+                    f"Successfully generated DFD using: {model_name}"
+                )
+                break
+
+            print(f"Empty response from {model_name}")
+            response = None
 
         except ServerError as exc:
             last_error = exc
-            print(f"Gemini model {model_name} unavailable: {exc}")
+            response = None
+
+            print(
+                f"Gemini model {model_name} unavailable: {exc}"
+            )
+
+            # Small delay before trying the next model
+            if index < len(models_to_try) - 1:
+                time.sleep(2)
 
     if response is None:
         raise RuntimeError(
-            "All configured Gemini models are currently unavailable. "
-            "Please try again later."
+            "All configured Gemini models failed or returned "
+            "empty responses. Please try again later."
         ) from last_error
 
-    # 4. Parse response
-    if not response.text:
-        raise ValueError("Gemini returned an empty response.")
-
+    # 5. Parse Gemini response
     try:
         dfd_data = json.loads(response.text)
+
     except json.JSONDecodeError as exc:
         raise ValueError(
             "Gemini returned invalid JSON."
         ) from exc
 
-    # 5. Validate top-level structure
+    # 6. Validate top-level structure
     if not isinstance(dfd_data, dict):
         raise ValueError("DFD response must be a JSON object.")
 
@@ -233,17 +252,23 @@ Additional requirements:
                 f"DFD response is missing required field: {key}"
             )
 
+    if not isinstance(dfd_data["title"], str):
+        raise ValueError("DFD title must be a string.")
+
     nodes = dfd_data["nodes"]
     edges = dfd_data["edges"]
     warnings = dfd_data["warnings"]
 
-    if not isinstance(nodes, list) or not isinstance(edges, list):
-        raise ValueError("Nodes and edges must be lists.")
+    if not isinstance(nodes, list):
+        raise ValueError("Nodes must be a list.")
+
+    if not isinstance(edges, list):
+        raise ValueError("Edges must be a list.")
 
     if not isinstance(warnings, list):
         raise ValueError("Warnings must be a list.")
 
-    # 6. Validate nodes
+    # 7. Validate nodes
     allowed_types = {
         "process",
         "data_store",
@@ -253,6 +278,7 @@ Additional requirements:
     node_ids = []
 
     for node in nodes:
+
         if not isinstance(node, dict):
             raise ValueError("Each node must be a JSON object.")
 
@@ -280,14 +306,13 @@ Additional requirements:
 
     valid_ids = set(node_ids)
 
-    # 7. Validate and normalize edges
+    # 8. Validate and normalize edges
     valid_edges = []
 
     for edge in edges:
+
         if not isinstance(edge, dict):
-            warnings.append(
-                f"Invalid edge removed: {edge}"
-            )
+            warnings.append("An invalid edge was removed.")
             continue
 
         source = edge.get("source")
@@ -296,7 +321,9 @@ Additional requirements:
         kind = edge.get("kind")
 
         if (
-            source not in valid_ids
+            not isinstance(source, str)
+            or not isinstance(target, str)
+            or source not in valid_ids
             or target not in valid_ids
             or source == target
             or not isinstance(label, str)
@@ -317,7 +344,7 @@ Additional requirements:
 
     dfd_data["edges"] = valid_edges
 
-    # 8. Display diagnostics
+    # 9. Display diagnostics
     print("Nodes:", dfd_data["nodes"])
     print("Edges:", dfd_data["edges"])
     print("Warnings:", dfd_data["warnings"])
