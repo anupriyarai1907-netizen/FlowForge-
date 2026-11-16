@@ -1,11 +1,12 @@
+
 from pathlib import Path
 import ast
 import re
 
 import sqlglot
 from flask import Flask, request, jsonify
-from flask import Flask, request, jsonify
 from flask_cors import CORS
+
 from analyzer import analyze_project
 from chunking import chunk_code
 from vector_store import store_chunks, create_sql_chunks, collection
@@ -15,17 +16,23 @@ from visualizer import visualize_dfd
 
 app = Flask(__name__)
 
-CORS(app, resources={
-    r"/*": {
-        "origins": [
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "https://flowforge-frontend-etnl.onrender.com"
-        ]
+CORS(
+    app,
+    resources={
+        r"/*": {
+            "origins": [
+                "https://flowforge-frontend-etnl.onrender.com",
+                "http://localhost:5173",
+                "http://127.0.0.1:5173"
+            ],
+            "methods": ["GET", "POST", "OPTIONS"],
+            "allow_headers": ["Content-Type"]
+        }
     }
-})
+)
 
 ALLOWED_EXTENSIONS = {".py", ".java", ".c", ".cpp", ".h", ".hpp", ".js"}
+
 
 
 @app.route("/")
