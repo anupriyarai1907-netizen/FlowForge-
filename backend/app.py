@@ -14,14 +14,17 @@ from validator import validate_dfd
 from visualizer import visualize_dfd
 
 app = Flask(__name__)
+
 CORS(app, resources={
     r"/*": {
         "origins": [
             "http://localhost:5173",
-            "http://127.0.0.1:5173"
+            "http://127.0.0.1:5173",
+            "https://flowforge-frontend-etnl.onrender.com"
         ]
     }
 })
+
 ALLOWED_EXTENSIONS = {".py", ".java", ".c", ".cpp", ".h", ".hpp", ".js"}
 
 
