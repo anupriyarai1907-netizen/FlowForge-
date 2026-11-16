@@ -6,11 +6,12 @@ import time
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from google.genai.errors import ServerError
+from google.genai.errors import APIError
 
 from retrieval import retrieve_context
 
 
+# Load environment variables
 load_dotenv()
 
 api_key = os.getenv("GEMINI_API_KEY")
@@ -20,10 +21,11 @@ if not api_key:
         "GEMINI_API_KEY missing. Check your environment variables."
     )
 
-# Limit each Gemini request to 45 seconds.
+
+# Gemini client configuration
 client = genai.Client(
     api_key=api_key,
-    http_options=types.HttpOptions(timeout=45000)
+    http_options=types.HttpOptions(timeout=40000)
 )
 
 
@@ -182,7 +184,7 @@ Additional requirements:
         "required": ["title", "nodes", "edges", "warnings"]
     }
 
-    # 4. Gemini model fallback
+    # 4. Gemini model fallback with automatic retry
     models_to_try = [
         "gemini-3.5-flash-lite",
         "gemini-3.6-flash",
@@ -192,45 +194,92 @@ Additional requirements:
     response = None
     last_error = None
 
-    for index, model_name in enumerate(models_to_try):
+    MAX_RETRIES = 2
 
-        try:
-            print(f"Trying Gemini model: {model_name}")
+    retryable_errors = {
+        408, 429, 500, 502, 503, 504
+    }
 
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config={
-                    "response_mime_type": "application/json",
-                    "response_schema": response_schema
-                }
-            )
+    for model_name in models_to_try:
 
-            if response and response.text:
+        for attempt in range(MAX_RETRIES):
+
+            try:
                 print(
-                    f"Successfully generated DFD using: {model_name}"
+                    f"Trying Gemini model: {model_name} "
+                    f"(Attempt {attempt + 1}/{MAX_RETRIES})"
+                )
+
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_schema": response_schema
+                    }
+                )
+
+                if response and response.text:
+                    print(
+                        f"Successfully generated DFD using: "
+                        f"{model_name}"
+                    )
+                    break
+
+                print(f"Empty response from {model_name}")
+                response = None
+
+            except APIError as exc:
+
+                last_error = exc
+                response = None
+
+                error_code = getattr(exc, "code", None)
+
+                try:
+                    error_code = int(error_code)
+                except (TypeError, ValueError):
+                    error_code = None
+
+                print(
+                    f"Gemini error for {model_name}: "
+                    f"HTTP {error_code} - {exc}"
+                )
+
+                if error_code not in retryable_errors:
+                    print(
+                        "Non-retryable error. "
+                        "Trying the next model."
+                    )
+                    break
+
+            except Exception as exc:
+
+                last_error = exc
+                response = None
+
+                print(
+                    f"Unexpected error for {model_name}: {exc}"
                 )
                 break
 
-            print(f"Empty response from {model_name}")
-            response = None
+            if attempt < MAX_RETRIES - 1:
+                wait_time = 2 ** (attempt + 1)
 
-        except ServerError as exc:
-            last_error = exc
-            response = None
+                print(
+                    f"Retrying {model_name} after "
+                    f"{wait_time} seconds..."
+                )
 
-            print(
-                f"Gemini model {model_name} unavailable: {exc}"
-            )
+                time.sleep(wait_time)
 
-            # Small delay before trying the next model
-            if index < len(models_to_try) - 1:
-                time.sleep(2)
+        if response is not None:
+            break
 
     if response is None:
         raise RuntimeError(
-            "All configured Gemini models failed or returned "
-            "empty responses. Please try again later."
+            "All configured Gemini models failed after "
+            "retry attempts. Please try again later."
         ) from last_error
 
     # 5. Parse Gemini response
@@ -353,6 +402,7 @@ Additional requirements:
 
 
 if __name__ == "__main__":
+
     result = generate_dfd(
         "Generate a detailed DFD for the supplied project source code."
     )
