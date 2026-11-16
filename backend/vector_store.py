@@ -1,17 +1,34 @@
 
-import chromadb
-from sentence_transformers import SentenceTransformer
-from chunking import chunk_python_code
 from analyzer import analyze_database
+from embeddings import generate_embeddings
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
 
-client = chromadb.PersistentClient(path="chroma_db")
+# Lightweight in-memory storage
+_stored_chunks = []
 
-collection = client.get_or_create_collection(
-    name="dfd_knowledge"
-)
 
+class InMemoryCollection:
+
+    def get(self, include=None):
+        return {
+            "ids": [item["id"] for item in _stored_chunks],
+            "documents": [item["document"] for item in _stored_chunks],
+            "metadatas": [item["metadata"] for item in _stored_chunks]
+        }
+
+    def delete(self, ids):
+        global _stored_chunks
+        ids_to_delete = set(ids or [])
+        _stored_chunks = [
+            item for item in _stored_chunks
+            if item["id"] not in ids_to_delete
+        ]
+
+    def count(self):
+        return len(_stored_chunks)
+
+
+collection = InMemoryCollection()
 
 
 def store_chunks(chunks):
@@ -19,51 +36,45 @@ def store_chunks(chunks):
         print("No chunks found.")
         return
 
-    documents = [chunk["content"] for chunk in chunks]
-    embeddings = model.encode(documents).tolist()
-
-    ids = []
-    metadatas = []
+    embeddings = generate_embeddings(chunks)
 
     for i, chunk in enumerate(chunks):
-        filename = chunk.get("filename", "unknown")
-        name = chunk.get("name", "unknown")
-        chunk_type = chunk.get("type", "unknown")
-        language = chunk.get("language", "unknown")
+        record_id = f"current_{i}"
 
-        ids.append(f"current_{i}")
+        record = {
+            "id": record_id,
+            "document": chunk.get("content", ""),
+            "embedding": embeddings[i],
+            "metadata": {
+                "type": str(chunk.get("type", "unknown")),
+                "name": str(chunk.get("name", "unknown")),
+                "filename": str(chunk.get("filename", "unknown")),
+                "language": str(chunk.get("language", "unknown"))
+            }
+        }
 
-        metadatas.append({
-            "type": chunk_type,
-            "name": name,
-            "filename": filename,
-            "language": language,
-        })
-
-    collection.upsert(
-        ids=ids,
-        documents=documents,
-        embeddings=embeddings,
-        metadatas=metadatas,
-    )
-
-    print("Stored chunks:", len(chunks))
-    for chunk in chunks:
-        print(
-            "Stored:",
-            chunk.get("filename", "unknown"),
-            chunk.get("type", "unknown"),
-            chunk.get("name", "unknown"),
+        existing_index = next(
+            (index for index, item in enumerate(_stored_chunks)
+             if item["id"] == record_id),
+            None
         )
 
+        if existing_index is None:
+            _stored_chunks.append(record)
+        else:
+            _stored_chunks[existing_index] = record
 
+    print("Stored chunks:", len(chunks))
+
+
+def get_stored_chunks():
+    return list(_stored_chunks)
 
 
 def create_sql_chunks(sql_code):
     database_info = analyze_database(sql_code)
     chunks = []
 
-    # Store table names and their columns
     for table_name, columns in database_info.get("tables", {}).items():
         chunks.append({
             "type": "table",
@@ -71,37 +82,20 @@ def create_sql_chunks(sql_code):
             "content": (
                 f"Database table: {table_name}. "
                 f"Columns: {', '.join(columns)}"
-            )
+            ),
+            "filename": "database.sql",
+            "language": "sql"
         })
 
-    # Store foreign-key relationships
     for relation in database_info.get("relationships", []):
         relation_text = str(relation)
+
         chunks.append({
             "type": "relationship",
             "name": relation_text,
-            "content": f"Database relationship: {relation_text}"
+            "content": f"Database relationship: {relation_text}",
+            "filename": "database.sql",
+            "language": "sql"
         })
 
     return chunks
-
-
-
-
-if __name__ == "__main__":
-    with open("sample.py", "r", encoding="utf-8") as file:
-        python_code = file.read()
-
-    with open("sample.sql", "r", encoding="utf-8") as file:
-        sql_code = file.read()
-
-    python_chunks = chunk_python_code(python_code)
-    sql_chunks = create_sql_chunks(sql_code)
-
-    all_chunks = python_chunks + sql_chunks
-
-    store_chunks(all_chunks)
-
-    print("Python chunks:", len(python_chunks))
-    print("SQL chunks:", len(sql_chunks))
-    print("Total stored chunks:", collection.count())

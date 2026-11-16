@@ -1,4 +1,4 @@
-
+from google.genai.errors import ServerError
 import os
 import json
 from dotenv import load_dotenv
@@ -108,90 +108,109 @@ Additional requirements:
 """
 
     # 3. Request structured JSON from Gemini
-    response = client.models.generate_content(
-        model="gemini-3.5-flash-lite",
-        contents=prompt,
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": {
-                "type": "OBJECT",
-                "properties": {
-                    "title": {
-                        "type": "STRING"
-                    },
-                    "nodes": {
-                        "type": "ARRAY",
-                        "items": {
-                            "type": "OBJECT",
-                            "properties": {
-                                "id": {
-                                    "type": "STRING"
-                                },
-                                "label": {
-                                    "type": "STRING"
-                                },
-                                "type": {
-                                    "type": "STRING",
-                                    "enum": [
-                                        "process",
-                                        "data_store",
-                                        "external_entity"
-                                    ]
-                                }
-                            },
-                            "required": [
-                                "id",
-                                "label",
-                                "type"
-                            ]
-                        }
-                    },
-                    "edges": {
-                        "type": "ARRAY",
-                        "items": {
-                            "type": "OBJECT",
-                            "properties": {
-                                "source": {
-                                    "type": "STRING"
-                                },
-                                "target": {
-                                    "type": "STRING"
-                                },
-                                "label": {
-                                    "type": "STRING"
-                                },
-                                "kind": {
-                                    "type": "STRING",
-                                    "enum": [
-                                        "data_flow",
-                                        "loop"
-                                    ]
-                                }
-                            },
-                            "required": [
-                                "source",
-                                "target",
-                                "label",
-                                "kind"
-                            ]
-                        }
-                    },
-                    "warnings": {
-                        "type": "ARRAY",
-                        "items": {
+    
+    # 3. Request structured JSON from Gemini with automatic fallback
+
+    response_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "title": {
+                "type": "STRING"
+            },
+            "nodes": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "id": {
                             "type": "STRING"
+                        },
+                        "label": {
+                            "type": "STRING"
+                        },
+                        "type": {
+                            "type": "STRING",
+                            "enum": [
+                                "process",
+                                "data_store",
+                                "external_entity"
+                            ]
                         }
-                    }
-                },
-                "required": [
-                    "title",
-                    "nodes",
-                    "edges",
-                    "warnings"
-                ]
+                    },
+                    "required": ["id", "label", "type"]
+                }
+            },
+            "edges": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "source": {
+                            "type": "STRING"
+                        },
+                        "target": {
+                            "type": "STRING"
+                        },
+                        "label": {
+                            "type": "STRING"
+                        },
+                        "kind": {
+                            "type": "STRING",
+                            "enum": ["data_flow", "loop"]
+                        }
+                    },
+                    "required": [
+                        "source",
+                        "target",
+                        "label",
+                        "kind"
+                    ]
+                }
+            },
+            "warnings": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "STRING"
+                }
             }
-        }
-    )
+        },
+        "required": ["title", "nodes", "edges", "warnings"]
+    }
+
+    models_to_try = [
+        "gemini-3.5-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-3.8-flash"
+    ]
+
+    response = None
+    last_error = None
+
+    for model_name in models_to_try:
+        try:
+            print(f"Trying Gemini model: {model_name}")
+
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": response_schema
+                }
+            )
+
+            print(f"Successfully generated DFD using: {model_name}")
+            break
+
+        except ServerError as exc:
+            last_error = exc
+            print(f"Gemini model {model_name} unavailable: {exc}")
+
+    if response is None:
+        raise RuntimeError(
+            "All configured Gemini models are currently unavailable. "
+            "Please try again later."
+        ) from last_error
 
     # 4. Parse response
     if not response.text:

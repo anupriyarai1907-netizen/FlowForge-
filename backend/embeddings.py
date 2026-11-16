@@ -1,41 +1,30 @@
 
-from sentence_transformers import SentenceTransformer
-from chunking import chunk_python_code
+import hashlib
+import re
+from collections import Counter
 
+DIMENSIONS = 256
 
-# Load a pretrained embedding model
-model = SentenceTransformer("all-MiniLM-L6-v2")
+def generate_embedding(text):
+    """Generate a lightweight deterministic embedding without loading PyTorch."""
+    vector = [0.0] * DIMENSIONS
+    words = re.findall(r"\w+", str(text).lower())
+
+    for word in words:
+        digest = hashlib.sha256(word.encode("utf-8")).digest()
+        index = int.from_bytes(digest[:4], "little") % DIMENSIONS
+        vector[index] += 1.0
+
+    magnitude = sum(value * value for value in vector) ** 0.5
+
+    if magnitude:
+        vector = [value / magnitude for value in vector]
+
+    return vector
 
 
 def generate_embeddings(chunks):
-    texts = [chunk["content"] for chunk in chunks]
-
-    if not texts:
-        return []
-
-    vectors = model.encode(texts)
-
-    results = []
-
-    for chunk, vector in zip(chunks, vectors):
-        results.append({
-            "name": chunk["name"],
-            "content": chunk["content"],
-            "embedding": vector.tolist()
-        })
-
-    return results
-
-
-if __name__ == "__main__":
-    with open("sample.py", "r", encoding="utf-8") as file:
-        code = file.read()
-
-    chunks = chunk_python_code(code)
-    embedded_chunks = generate_embeddings(chunks)
-
-    for item in embedded_chunks:
-        print("-" * 40)
-        print("Function:", item["name"])
-        print("Vector dimensions:", len(item["embedding"]))
-        print("First 5 values:", item["embedding"][:5])
+    return [
+        generate_embedding(chunk.get("content", "") if isinstance(chunk, dict) else str(chunk))
+        for chunk in chunks
+    ]
